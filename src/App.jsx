@@ -1,6 +1,8 @@
 import { useState, useRef } from "react";
 import axios from "axios";
 
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+
 function App() {
   const [file, setFile] = useState(null);
   const [link, setLink] = useState("");
@@ -10,44 +12,70 @@ function App() {
 
   const fileInputRef = useRef();
 
+  // 🔹 Split file into chunks
+  const createChunks = (file) => {
+    const chunks = [];
+    let start = 0;
+
+    while (start < file.size) {
+      const chunk = file.slice(start, start + CHUNK_SIZE);
+      chunks.push(chunk);
+      start += CHUNK_SIZE;
+    }
+
+    return chunks;
+  };
+
   const uploadFile = async () => {
     if (!file || uploading) return;
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     setUploading(true);
     setError("");
+    setProgress(0);
+    setLink("");
+
+    const chunks = createChunks(file);
+    const totalChunks = chunks.length;
 
     try {
-      const res = await axios.post(
-        "http://localhost:5000/api/files/upload",
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data"
-          },
-          onUploadProgress: (event) => {
-            // Guard against undefined total
-            if (!event.total) return;
+      // 🔹 Upload chunks one by one
+      for (let i = 0; i < totalChunks; i++) {
+        const formData = new FormData();
 
-            const percent = Math.round(
-              (event.loaded * 100) / event.total
-            );
+        formData.append("chunk", chunks[i]);
+        formData.append("chunkIndex", i);
+        formData.append("totalChunks", totalChunks);
+        formData.append("fileName", file.name);
 
-            // Prevent backward jumps (rare but real)
-            setProgress((prev) => Math.max(prev, percent));
+        await axios.post(
+          "http://localhost:5000/api/files/upload-chunk",
+          formData,
+          {
+            headers: {
+              "Content-Type": "multipart/form-data"
+            }
           }
+        );
+
+        // 🔹 Update progress based on chunks uploaded
+        const percent = Math.round(((i + 1) / totalChunks) * 100);
+        setProgress(percent);
+      }
+
+      // 🔹 Merge chunks on server
+      const res = await axios.post(
+        "http://localhost:5000/api/files/merge",
+        {
+          fileName: file.name,
+          totalChunks
         }
       );
 
       setLink(res.data.downloadUrl);
-
-      // Lock at 100% for good UX
       setProgress(100);
     } catch (err) {
       console.error(err);
-      setError("Upload failed. Please try again.");
+      setError("Upload failed during chunk transfer.");
     } finally {
       setUploading(false);
     }
@@ -59,7 +87,6 @@ function App() {
     setProgress(0);
     setError("");
 
-    // Reset actual input element (important!)
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -67,10 +94,8 @@ function App() {
 
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0];
-
     if (!selectedFile) return;
 
-    // Reset previous state when new file is selected
     setFile(selectedFile);
     setLink("");
     setProgress(0);
@@ -79,7 +104,7 @@ function App() {
 
   return (
     <div style={{ padding: "20px", fontFamily: "sans-serif" }}>
-      <h1>File Transfer</h1>
+      <h1>Chunked File Transfer</h1>
 
       <input
         type="file"
